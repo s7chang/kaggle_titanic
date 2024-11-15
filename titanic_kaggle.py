@@ -1,4 +1,3 @@
-# 필요한 라이브러리 임포트
 import numpy as np
 import pandas as pd
 import torch
@@ -7,63 +6,64 @@ import torch.optim as optim
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score
-import matplotlib.pyplot as plt
 
 # 데이터 불러오기
-train = pd.read_csv('train.csv')
-test = pd.read_csv('test.csv')
+train = pd.read_csv("train.csv")
+test = pd.read_csv("test.csv")
+test2 = test.copy()
 
-# 데이터 전처리 함수 정의
-def preprocess_data(df):
-    # Title 추출
-    df['Title'] = df['Name'].str.extract(' ([A-Za-z]+)\.', expand=False)
-    title_mapping = {"Mr": 0, "Miss": 1, "Mrs": 2, "Master": 3, "Dr": 3, "Rev": 3, "Col": 3, "Major": 3, 
-                     "Mlle": 3, "Countess": 3, "Ms": 3, "Lady": 3, "Jonkheer": 3, "Don": 3, "Dona": 3, 
-                     "Mme": 3, "Capt": 3, "Sir": 3 }
+# 데이터 전처리 함수
+def preprocess_data(df, is_train=True):
+    df['Age'].fillna(df['Age'].median(), inplace=True)
+    df["Embarked"].fillna("S", inplace=True)
+    df['Fare'].fillna(df['Fare'].median(), inplace=True)
+
+    df['T_partner'] = df["SibSp"] + df["Parch"]
+    df['Alone'] = np.where(df['T_partner'] > 0, 0, 1)
+    df['Words_Count'] = df['Name'].apply(lambda x: len(x.split()))
+    df['Title'] = df.Name.str.extract(' ([A-Za-z]+)\.', expand=False)
+    df['Title'] = df['Title'].replace(['Lady', 'Countess', 'Capt', 'Col', 'Don', 'Dr', 'Major', 
+                                        'Rev', 'Sir', 'Jonkheer', 'Dona'], 'Rare')
+    df['Title'] = df['Title'].replace(['Mlle', 'Ms'], 'Miss')
+    df['Title'] = df['Title'].replace('Mme', 'Mrs')
+    title_mapping = {"Mr": 1, "Miss": 2, "Mrs": 3, "Master": 4, "Rare": 5}
     df['Title'] = df['Title'].map(title_mapping)
+    df['Title'] = df['Title'].fillna(0)
 
-    # Age 결측치 처리
-    df['Age'] = df['Age'].fillna(df.groupby('Title')['Age'].transform('median'))
+    df['Cabin'] = df['Cabin'].fillna('U')
+    df['Cabin'] = df['Cabin'].str[0]
+    cabin_category = {'A': 9, 'B': 8, 'C': 7, 'D': 6, 'E': 5, 'F': 4, 'G': 3, 'T': 2, 'U': 1}
+    df['Cabin'] = df['Cabin'].map(cabin_category)
 
-    # Embarked 결측치 처리
-    df['Embarked'] = df['Embarked'].fillna(df['Embarked'].mode()[0])
-    df['Embarked'] = df['Embarked'].map({'S': 0, 'C': 1, 'Q': 2})
+    df['is_minor'] = np.where(df['Age'] <= 16, 1, 0)
 
-    # 성별 변환
-    df['Sex'] = df['Sex'].map({'male': 0, 'female': 1})
+    df = pd.get_dummies(df, columns=['Sex', 'Embarked', 'Pclass'], drop_first=True)
+    df.drop(['PassengerId', 'Name', 'Ticket', 'SibSp', 'Parch', 'T_partner'], axis=1, inplace=True)
+    
+    if is_train:
+        df.drop("Survived", axis=1, inplace=True)
 
-    # 가족 수 계산
-    df['FamilySize'] = df['SibSp'] + df['Parch'] + 1
-
-    # Fare 결측치 처리
-    df['Fare'] = df['Fare'].fillna(df['Fare'].median())
-
-    # 불필요한 열 제거
-    df = df.drop(['PassengerId', 'Name', 'Ticket', 'Cabin'], axis=1)
     return df
 
-# 데이터 전처리
-train = preprocess_data(train)
-test = preprocess_data(test)
-
-# 특성(X)과 레이블(y) 분리
-X = train.drop('Survived', axis=1)
-y = train['Survived']
+# 전처리 수행
+y_train = train["Survived"]
+train = preprocess_data(train, is_train=True)
+test = preprocess_data(test, is_train=False)
 
 # 데이터 스케일링
 scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
-test_scaled = scaler.transform(test)
+X_train_scaled = scaler.fit_transform(train)
+X_test_scaled = scaler.transform(test)
 
 # PyTorch 텐서로 변환
-X_tensor = torch.tensor(X_scaled, dtype=torch.float32)
-y_tensor = torch.tensor(y.values, dtype=torch.float32).view(-1, 1)
-X_test_tensor = torch.tensor(test_scaled, dtype=torch.float32)
+X_tensor = torch.tensor(X_train_scaled, dtype=torch.float32)
+y_tensor = torch.tensor(y_train.values, dtype=torch.float32).view(-1, 1)
+X_test_tensor = torch.tensor(X_test_scaled, dtype=torch.float32)
 
-# 훈련 데이터와 검증 데이터 분리
+# 학습 및 검증 데이터 분리
 X_train, X_val, y_train, y_val = train_test_split(X_tensor, y_tensor, test_size=0.2, random_state=42)
 
-# 모델 정의
+# PyTorch 모델 정의
 class TitanicNet(nn.Module):
     def __init__(self, input_size):
         super(TitanicNet, self).__init__()
@@ -71,7 +71,7 @@ class TitanicNet(nn.Module):
         self.fc2 = nn.Linear(64, 32)
         self.fc3 = nn.Linear(32, 1)
         self.dropout = nn.Dropout(0.5)
-        
+
     def forward(self, x):
         x = torch.relu(self.fc1(x))
         x = self.dropout(x)
@@ -86,19 +86,16 @@ criterion = nn.BCELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # 학습
-num_epochs = 500
+num_epochs = 100
 batch_size = 64
 best_val_accuracy = 0
 
 for epoch in range(num_epochs):
-    # 학습 모드 설정
     model.train()
     permutation = torch.randperm(X_train.size()[0])
-
     train_loss = 0.0
     correct_train = 0
     
-    # 미니배치 학습
     for i in range(0, X_train.size()[0], batch_size):
         indices = permutation[i:i + batch_size]
         batch_x, batch_y = X_train[indices], y_train[indices]
@@ -109,29 +106,24 @@ for epoch in range(num_epochs):
         loss.backward()
         optimizer.step()
         
-        # Train loss와 accuracy 계산
         train_loss += loss.item() * batch_x.size(0)
         predicted = (outputs > 0.5).float()
         correct_train += (predicted == batch_y).sum().item()
     
-    # 에폭별 평균 train loss와 accuracy 계산
     train_loss /= X_train.size(0)
     train_accuracy = correct_train / X_train.size(0)
 
-    # 검증 모드 설정
     model.eval()
     with torch.no_grad():
         val_outputs = model(X_val)
         val_loss = criterion(val_outputs, y_val).item()
         val_predicted = (val_outputs > 0.5).float()
-        val_accuracy = accuracy_score(y_val, val_predicted)
+        val_accuracy = accuracy_score(y_val.numpy(), val_predicted.numpy())
     
-    # 에폭별 결과 출력
     print(f"Epoch [{epoch+1}/{num_epochs}], "
           f"Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, "
           f"Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
     
-    # 최적의 모델 저장
     if val_accuracy > best_val_accuracy:
         best_val_accuracy = val_accuracy
         torch.save(model.state_dict(), "best_model.pt")
@@ -149,7 +141,7 @@ with torch.no_grad():
 
 # 제출 파일 생성
 submission = pd.DataFrame({
-    'PassengerId': pd.read_csv('test.csv')['PassengerId'],
+    'PassengerId': test2['PassengerId'],
     'Survived': test_predicted.numpy()
 })
 submission.to_csv('submission.csv', index=False)
